@@ -127,10 +127,6 @@ def run_afl_showmap(target: str, afl_stats: FuzzerStats, testcase: str) -> bytes
         if opt in ('-m', '-Q', '-t'):
             afl_showmap_opts.extend([opt, arg])
 
-    # Default timeout of 1 sec
-    if '-t' not in afl_showmap_opts:
-        afl_showmap_opts.extend(['-t', '1000'])
-
     # Generate the target command-line for a testcase popped off the task
     # queue. Replace the original (uninstrumented) target binary with the
     # instrumented version
