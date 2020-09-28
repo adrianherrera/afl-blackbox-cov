@@ -2500,6 +2500,28 @@ static u8 run_target(char** argv, u32 timeout) {
 }
 
 
+#if defined(BLACKBOX_COV)
+
+static void blackbox_save(void *mem, u32 len) {
+  u8 *fn;
+  s32 fd;
+
+#ifndef SIMPLE_FILES
+  fn = alloc_printf("%s/queue/.blackbox/id:%032llu", out_dir, total_execs);
+#else
+  fn = alloc_printf("%s/queue/.blackbox/id_%032llu", out_dir, total_execs);
+#endif
+
+  fd = open(fn, O_WRONLY | O_CREAT, 0600);
+  if (fd < 0) PFATAL("Unable to create '%s'", fn);
+  ck_write(fd, mem, len, fn);
+  close(fd);
+  ck_free(fn);
+}
+
+#endif
+
+
 /* Write modified data to file for testing. If out_file is set, the old file
    is unlinked and a new one is created. Otherwise, out_fd is rewound and
    truncated. */
@@ -2526,6 +2548,10 @@ static void write_to_testcase(void* mem, u32 len) {
     lseek(fd, 0, SEEK_SET);
 
   } else close(fd);
+
+#if defined(BLACKBOX_COV)
+  blackbox_save(mem, len);
+#endif
 
 }
 
@@ -3541,11 +3567,11 @@ static void maybe_update_plot_file(double bitmap_cvg, double eps) {
      favored_not_fuzzed, unique_crashes, unique_hangs, max_depth,
      execs_per_sec */
 
-  fprintf(plot_file, 
-          "%llu, %llu, %u, %u, %u, %u, %0.02f%%, %llu, %llu, %u, %0.02f\n",
+  fprintf(plot_file,
+          "%llu, %llu, %u, %u, %u, %u, %0.02f%%, %llu, %llu, %u, %llu, %0.02f\n",
           get_cur_time() / 1000, queue_cycle - 1, current_entry, queued_paths,
           pending_not_fuzzed, pending_favored, bitmap_cvg, unique_crashes,
-          unique_hangs, max_depth, eps); /* ignore errors */
+          unique_hangs, max_depth, total_execs, eps); /* ignore errors */
 
   fflush(plot_file);
 
@@ -3803,6 +3829,14 @@ static void maybe_delete_out_dir(void) {
   fn = alloc_printf("%s/queue/.state", out_dir);
   if (rmdir(fn) && errno != ENOENT) goto dir_cleanup_failed;
   ck_free(fn);
+
+#if defined(BLACKBOX_COV)
+  /* Clear out the "shadow" queue. */
+
+  fn = alloc_printf("%s/queue/.blackbox", out_dir);
+  if (delete_files(fn, CASE_PREFIX)) goto dir_cleanup_failed;
+  ck_free(fn);
+#endif
 
   fn = alloc_printf("%s/queue", out_dir);
   if (delete_files(fn, CASE_PREFIX)) goto dir_cleanup_failed;
@@ -7265,8 +7299,18 @@ EXP_ST void setup_dirs_fds(void) {
 
   fprintf(plot_file, "# unix_time, cycles_done, cur_path, paths_total, "
                      "pending_total, pending_favs, map_size, unique_crashes, "
-                     "unique_hangs, max_depth, execs_per_sec\n");
+                     "unique_hangs, max_depth, execs, execs_per_sec\n");
                      /* ignore errors */
+
+#if defined(BLACKBOX_COV)
+  /* Create the "shadow" queue directory for storing all blackbox test cases.
+     Another process will watch and maintain (e.g., deduplicate) this directory. */
+
+  tmp = alloc_printf("%s/queue/.blackbox", out_dir);
+  if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
+  ck_free(tmp);
+
+#endif
 
 }
 

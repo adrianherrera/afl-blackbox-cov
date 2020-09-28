@@ -1,3 +1,5 @@
+afl-blackbox-cov
+
 # Binaries produced by "make".
 afl-analyze
 afl-as
