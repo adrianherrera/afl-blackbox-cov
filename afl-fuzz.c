@@ -8110,6 +8110,11 @@ int main(int argc, char** argv) {
   else
     use_argv = argv + optind;
 
+#if defined(BLACKBOX_COV)
+  /* Create the stats file before the dry run so that the watchdog can capture
+     the dry run coverage. */
+  write_stats_file(0, 0, 0);
+#endif
   perform_dry_run(use_argv);
 
   cull_queue();
@@ -8118,7 +8123,9 @@ int main(int argc, char** argv) {
 
   seek_to = find_start_position();
 
+#if !defined(BLACKBOX_COV)
   write_stats_file(0, 0, 0);
+#endif
   save_auto();
 
   if (stop_soon) goto stop_fuzzing;
