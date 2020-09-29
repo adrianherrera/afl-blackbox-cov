@@ -11,13 +11,14 @@ Author: Adrian Herrera
 
 
 from argparse import ArgumentParser, Namespace
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor as Executor
 from csv import DictWriter as CsvDictWriter
 import multiprocessing
 import os
 from pathlib import Path
 from queue import Queue
 from shutil import which
+import signal
 import subprocess
 from tempfile import NamedTemporaryFile
 from threading import Thread
@@ -39,12 +40,14 @@ CSV_FIELDNAMES = ('unix_time', 'map_size', 'execs')
 def parse_args() -> Namespace:
     """Parse command-line arguments."""
     parser = ArgumentParser(description='Blackbox coverage watchdog')
-    parser.add_argument('-j', type=int, default=0,
+    parser.add_argument('-j', '--jobs', type=int, default=0,
                         help='Number of worker threads to spawn')
-    parser.add_argument('-t', '--target', required=True,
-                        help='Instrumented target')
     parser.add_argument('-c', '--csv', default=None,
                         help='Write coverage information to a CSV')
+    parser.add_argument('--target', required=True,
+                        help='Instrumented target')
+    parser.add_argument('--timeout', type=int, default=0,
+                        help='Timeout in seconds')
     parser.add_argument('out_dir', metavar='OUT_DIR',
                         help='AFL output directory')
 
@@ -145,32 +148,36 @@ def run_afl_showmap(target: str, afl_stats: FuzzerStats, testcase: str) -> bytes
             return showmap_out.read()
 
 
+def no_new_files(signum, frame):
+    """
+    SIGALRM handler.
+
+    Kills the watchdog.
+    """
+    print('No new files, goodbye')
+    os.kill(0, 9)
+
+
 class TestCaseHandler(FileSystemEventHandler):
     """
     Watches the "shadow" queue directory (`queue/.blackbox`) and deduplicates
     testcases that get written to this queue by executing afl-showmap.
     """
 
-    def __init__(self, max_task: int, target: str, afl_stats: FuzzerStats,
-                 csv_path: Path=None):
-        # Responsible for the pool of worker threads for generating testcase
+    def __init__(self, executor: Executor, cov_queue: Queue,
+                 target: str, afl_stats: FuzzerStats, timeout: int=0):
+        # Responsible for the pool of worker threads that generate testcase
         # coverage
-        self._executor = ThreadPoolExecutor(max_workers=max_task)
-
-        # Thread responsible for deduplicating entries in the output directory
-        # and logging coverage to a CSV
-        self._cov_bitmap = [255] * MAP_SIZE
-        self._cov_queue = Queue(max_task)
-
-        self._cov_thread = Thread(target=remove_duplicate_testcases,
-                                  args=(self._cov_bitmap, self._cov_queue,
-                                        csv_path))
-        self._cov_thread.daemon = True
-        self._cov_thread.start()
+        self._executor = executor
+        self._cov_queue = cov_queue
 
         # Required for afl-showmap
         self._target = target
         self._afl_stats = afl_stats
+
+        # Register signal handler
+        self._timeout = timeout
+        signal.signal(signal.SIGALRM, no_new_files)
 
     def on_created(self, event) -> None:
         """
@@ -182,6 +189,9 @@ class TestCaseHandler(FileSystemEventHandler):
         """
         if event.is_directory:
             return
+
+        # A new file has been created. Reset the timeout alarm
+        signal.alarm(self._timeout)
 
         testcase = event.src_path
         cov_future = self._executor.submit(run_afl_showmap, self._target,
@@ -200,11 +210,9 @@ def main() -> None:
 
     # Maxmimum number of tasks. Two 2 tasks are required as a minimum: one for
     # running afl-showmap, and another for updating the coverage bitmap
-    max_task = args.j
+    max_task = args.jobs
     if max_task == 0:
         max_task = multiprocessing.cpu_count()
-    elif max_task <= 2:
-        max_task = 2
 
     # Check afl-showmap
     if not which('afl-showmap'):
@@ -225,21 +233,34 @@ def main() -> None:
         with open(csv_path, 'w') as outf:
             CsvDictWriter(outf, fieldnames=CSV_FIELDNAMES).writeheader()
 
-    # Start the watchdog
-    handler = TestCaseHandler(max_task - 1, target, afl_stats, csv_path)
-    observer = Observer()
-    observer.schedule(handler, out_dir / 'queue' / '.blackbox')
-    observer.start()
+    with Executor(max_workers=max_task) as executor:
+        # The coverage bitmap
+        cov_bitmap = [255] * MAP_SIZE
+        cov_queue = Queue(max_task)
 
-    # Continue until interrupted
-    try:
-        while observer.is_alive():
-            observer.join(1)
-    except KeyboardInterrupt:
-        print('\nCtrl-C detected, goodbye')
-        observer.stop()
-        observer.join()
-        os.kill(0, 9)
+        # Thread responsible for deduplicating entries in the output directory
+        # and logging coverage to a CSV
+        cov_thread = Thread(target=remove_duplicate_testcases,
+                            args=(cov_bitmap, cov_queue, csv_path))
+        cov_thread.daemon = True
+        cov_thread.start()
+
+        # Start the watchdog
+        handler = TestCaseHandler(executor, cov_queue, target, afl_stats,
+                                  args.timeout)
+        observer = Observer()
+        observer.schedule(handler, out_dir / 'queue' / '.blackbox')
+        observer.start()
+
+        # Continue until interrupted
+        try:
+            while observer.is_alive():
+                observer.join(1)
+        except KeyboardInterrupt:
+            print('\nCtrl-C detected, goodbye')
+            observer.stop()
+            observer.join()
+            os.kill(0, 9)
 
 
 if __name__ == '__main__':
