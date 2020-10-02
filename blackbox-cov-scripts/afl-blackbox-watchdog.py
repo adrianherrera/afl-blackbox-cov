@@ -103,7 +103,7 @@ def remove_duplicate_testcases(virgin_bits: list, queue: Queue,
         new_bits, virgin_bits = has_new_bits(cov, virgin_bits)
 
         if new_bits == 0:
-            os.unlink(testcase)
+            Thread(target=lambda : os.unlink(testcase)).start()
         elif csv_path:
             # If a CSV file has been provided, write coverage information to the
             # CSV file
