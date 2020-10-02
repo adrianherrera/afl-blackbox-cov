@@ -11,8 +11,9 @@ Author: Adrian Herrera
 
 
 from argparse import ArgumentParser, Namespace
-from concurrent.futures import ThreadPoolExecutor as Executor
+from concurrent.futures import Future, ThreadPoolExecutor as Executor
 from csv import DictWriter as CsvDictWriter
+from functools import partial
 import multiprocessing
 import os
 from pathlib import Path
@@ -179,6 +180,14 @@ class TestCaseHandler(FileSystemEventHandler):
         self._timeout = timeout
         signal.signal(signal.SIGALRM, no_new_files)
 
+    def add_to_queue(self, testcase: Path, future: Future) -> None:
+        """
+        Executor callback.
+
+        Adds the testcase and its coverage to the queue.
+        """
+        self._cov_queue.put((Path(testcase), future.result()))
+
     def on_created(self, event) -> None:
         """
         Triggered whenever a new testcase is added to the directory.
@@ -196,7 +205,7 @@ class TestCaseHandler(FileSystemEventHandler):
         testcase = event.src_path
         cov_future = self._executor.submit(run_afl_showmap, self._target,
                                            self._afl_stats, testcase)
-        self._cov_queue.put((Path(testcase), cov_future.result()))
+        cov_future.add_done_callback(partial(self.add_to_queue, testcase))
 
 
 def main() -> None:
