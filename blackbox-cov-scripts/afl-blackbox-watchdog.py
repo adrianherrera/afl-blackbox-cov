@@ -11,7 +11,7 @@ Author: Adrian Herrera
 
 
 from argparse import ArgumentParser, Namespace
-from concurrent.futures import Future, ThreadPoolExecutor as Executor
+from concurrent.futures import Future, ProcessPoolExecutor as Executor
 from csv import DictWriter as CsvDictWriter
 from functools import partial
 import multiprocessing
