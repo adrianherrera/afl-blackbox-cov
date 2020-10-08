@@ -21,6 +21,7 @@ from queue import Queue
 from shutil import which
 import signal
 import subprocess
+from tarfile import TarFile, TarInfo
 from tempfile import NamedTemporaryFile
 from threading import Thread
 from time import sleep
@@ -49,7 +50,7 @@ def parse_args() -> Namespace:
                         help='Instrumented target')
     parser.add_argument('--timeout', type=int, default=0,
                         help='Timeout in seconds')
-    parser.add_argument('out_dir', metavar='OUT_DIR',
+    parser.add_argument('out_dir', metavar='OUT_DIR', type=Path,
                         help='AFL output directory')
 
     return parser.parse_args()
@@ -93,7 +94,7 @@ def has_new_bits(trace_bits: list, virgin_map: list) -> (int, list):
 
 
 def remove_duplicate_testcases(virgin_bits: list, queue: Queue,
-                               csv_path: Path=None) -> None:
+                               tar: TarFile, csv_path: Path=None) -> None:
     """
     Retrieve coverage information from the queue, and delete the testcase if it
     does *not* lead to new coverage.
@@ -102,21 +103,25 @@ def remove_duplicate_testcases(virgin_bits: list, queue: Queue,
         testcase, cov = queue.get()
         new_bits, virgin_bits = has_new_bits(cov, virgin_bits)
 
-        if new_bits == 0:
-            Thread(target=lambda : os.unlink(testcase)).start()
-        elif csv_path:
-            # If a CSV file has been provided, write coverage information to the
-            # CSV file
-            t_bytes = count_non_255_bytes(virgin_bits)
-            t_byte_ratio = (t_bytes * 100.0) / MAP_SIZE
-            execs = int(testcase.name.split('id:')[1])
-            csv_dict= dict(unix_time='%d' % testcase.stat().st_ctime,
-                           map_size='%.02f' % t_byte_ratio,
-                           execs=execs)
+        if new_bits:
+            with open(testcase, 'rb') as inf:
+                tar.addfile(TarInfo(testcase.name), inf)
 
-            with open(csv_path, 'a') as outf:
-                CsvDictWriter(outf, fieldnames=CSV_FIELDNAMES).writerow(csv_dict)
+            if csv_path:
+                # If a CSV file has been provided, write coverage information to
+                # the CSV file
+                t_bytes = count_non_255_bytes(virgin_bits)
+                t_byte_ratio = (t_bytes * 100.0) / MAP_SIZE
+                execs = int(testcase.name.split('id:')[1])
+                csv_dict= dict(unix_time='%d' % testcase.stat().st_ctime,
+                               map_size='%.02f' % t_byte_ratio,
+                               execs=execs)
 
+                with open(csv_path, 'a') as outf:
+                    writer = CsvDictWriter(outf, fieldnames=CSV_FIELDNAMES)
+                    writer.writerow(csv_dict)
+
+        Thread(target=lambda: os.unlink(testcase)).start()
         queue.task_done()
 
 
@@ -186,7 +191,7 @@ class TestCaseHandler(FileSystemEventHandler):
 
         Adds the testcase and its coverage to the queue.
         """
-        self._cov_queue.put((Path(testcase), future.result()))
+        self._cov_queue.put((testcase, future.result()))
 
     def on_created(self, event) -> None:
         """
@@ -202,7 +207,7 @@ class TestCaseHandler(FileSystemEventHandler):
         # A new file has been created. Reset the timeout alarm
         signal.alarm(self._timeout)
 
-        testcase = event.src_path
+        testcase = Path(event.src_path)
         cov_future = self._executor.submit(run_afl_showmap, self._target,
                                            self._afl_stats, testcase)
         cov_future.add_done_callback(partial(self.add_to_queue, testcase))
@@ -228,7 +233,7 @@ def main() -> None:
         raise Exception('Could not find afl-showmap. Check PATH')
 
     # Wait for fuzzer_stats to exist
-    out_dir = Path(args.out_dir)
+    out_dir = args.out_dir
     fuzzer_stats_path = out_dir / 'fuzzer_stats'
     while not fuzzer_stats_path.exists():
         sleep(1)
@@ -242,7 +247,8 @@ def main() -> None:
         with open(csv_path, 'w') as outf:
             CsvDictWriter(outf, fieldnames=CSV_FIELDNAMES).writeheader()
 
-    with Executor(max_workers=max_task) as executor:
+    with Executor(max_workers=max_task) as executor, \
+            TarFile.open(out_dir / 'blackbox.tar.gz', 'w:gz') as tar:
         # The coverage bitmap
         cov_bitmap = [255] * MAP_SIZE
         cov_queue = Queue(max_task)
@@ -250,7 +256,7 @@ def main() -> None:
         # Thread responsible for deduplicating entries in the output directory
         # and logging coverage to a CSV
         cov_thread = Thread(target=remove_duplicate_testcases,
-                            args=(cov_bitmap, cov_queue, csv_path))
+                            args=(cov_bitmap, cov_queue, tar, csv_path))
         cov_thread.daemon = True
         cov_thread.start()
 
@@ -269,7 +275,6 @@ def main() -> None:
             print('\nCtrl-C detected, goodbye')
             observer.stop()
             observer.join()
-            os.kill(0, 9)
 
 
 if __name__ == '__main__':
