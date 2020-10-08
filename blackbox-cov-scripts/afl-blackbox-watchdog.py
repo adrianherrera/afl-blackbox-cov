@@ -15,6 +15,7 @@ from concurrent.futures import Future, ThreadPoolExecutor as Executor
 from csv import DictWriter as CsvDictWriter
 from functools import partial
 import multiprocessing
+from io import BufferedWriter
 import os
 from pathlib import Path
 from queue import Queue
@@ -94,7 +95,8 @@ def has_new_bits(trace_bits: list, virgin_map: list) -> (int, list):
 
 
 def remove_duplicate_testcases(virgin_bits: list, queue: Queue,
-                               tar: TarFile, csv_path: Path=None) -> None:
+                               tar_file: BufferedWriter,
+                               csv_path: Path=None) -> None:
     """
     Retrieve coverage information from the queue, and delete the testcase if it
     does *not* lead to new coverage.
@@ -104,8 +106,11 @@ def remove_duplicate_testcases(virgin_bits: list, queue: Queue,
         new_bits, virgin_bits = has_new_bits(cov, virgin_bits)
 
         if new_bits:
-            with open(testcase, 'rb') as inf:
+            # Write testcase to GZIP
+            with open(testcase, 'rb') as inf, \
+                    TarFile.open(fileobj=tar_file, mode='w:gz') as tar:
                 tar.addfile(TarInfo(testcase.name), inf)
+            tar_file.flush()
 
             if csv_path:
                 # If a CSV file has been provided, write coverage information to
@@ -121,6 +126,7 @@ def remove_duplicate_testcases(virgin_bits: list, queue: Queue,
                     writer = CsvDictWriter(outf, fieldnames=CSV_FIELDNAMES)
                     writer.writerow(csv_dict)
 
+        # Delete testcase
         Thread(target=lambda: os.unlink(testcase)).start()
         queue.task_done()
 
@@ -248,7 +254,7 @@ def main() -> None:
             CsvDictWriter(outf, fieldnames=CSV_FIELDNAMES).writeheader()
 
     with Executor(max_workers=max_task) as executor, \
-            TarFile.open(out_dir / 'blackbox.tar.gz', 'w:gz') as tar:
+            open(out_dir / 'blackbox.tar.gz', 'wb') as tar_file:
         # The coverage bitmap
         cov_bitmap = [255] * MAP_SIZE
         cov_queue = Queue(max_task)
@@ -256,7 +262,7 @@ def main() -> None:
         # Thread responsible for deduplicating entries in the output directory
         # and logging coverage to a CSV
         cov_thread = Thread(target=remove_duplicate_testcases,
-                            args=(cov_bitmap, cov_queue, tar, csv_path))
+                            args=(cov_bitmap, cov_queue, tar_file, csv_path))
         cov_thread.daemon = True
         cov_thread.start()
 
