@@ -513,17 +513,12 @@ int main(int Argc, char *Argv[]) {
   }
 
   OutDir = Argv[optind];
-  fs::path FuzzerStats = OutDir / "fuzzer_stats";
 
   // Setup signal handlers
   SetupSignalHandlers();
 
-  // Wait for fuzzer_stats to exist
-  while (!fs::exists(FuzzerStats))
-    sleep(1);
-
   // Parse fuzzer_stats
-  std::ifstream IFS(FuzzerStats);
+  std::ifstream IFS(OutDir / "fuzzer_stats");
   std::vector<std::string> TargetArgs;
   ParseFuzzerStats(IFS, TargetArgs);
   IFS.close();
