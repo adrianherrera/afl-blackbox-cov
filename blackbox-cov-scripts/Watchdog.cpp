@@ -46,12 +46,16 @@ static inline void ToCStringVector(const std::vector<std::string> &V1,
 //
 ////////////////////////////////////////////////////////////////////////////////
 
-static fs::path OutDir; /**< AFL output directory */
+static bool Stop;          /**< Stop the watchdog */
+static fs::path OutDir;    /**< AFL output directory */
+static FILE *Csv;          /**< CSV log file */
+static std::mutex CsvLock; /**< CSV log file lock */
 
 static u64 MemLimit = MEM_LIMIT; /**< Memory limit (MB) */
 static u32 ExecTimeout;          /**< Exec timeout (ms) */
 
-static u8 VirginBits[MAP_SIZE]; /**< Regions yet untouched by fuzzing */
+static u8 VirginBits[MAP_SIZE];   /**< Regions yet untouched by fuzzing */
+static std::mutex VirginBitsLock; /**< Coverage bitmap lock */
 
 // Destructively classify execution counts in a trace. This is used as a
 // preprocessing step for any newly acquired traces. Called on every exec, must
@@ -74,7 +78,7 @@ static void InitCountClass16() {
 }
 
 #ifdef WORD_SIZE_64
-static inline void ClassifyCounts(u64 *Mem) {
+static inline void ClassifyCounts(const u64 *Mem) {
   u32 I = MAP_SIZE >> 3;
 
   while (I--) {
@@ -92,7 +96,7 @@ static inline void ClassifyCounts(u64 *Mem) {
   }
 }
 #else
-static inline void ClassifyCounts(u32 *Mem) {
+static inline void ClassifyCounts(const u32 *Mem) {
   u32 I = MAP_SIZE >> 2;
 
   while (I--) {
@@ -114,8 +118,8 @@ static inline void ClassifyCounts(u32 *Mem) {
 
 #define FF(_b) (0xff << ((_b) << 3))
 
-static u32 CountNon255Bytes(u8 *Mem) {
-  u32 *Ptr = (u32 *)Mem;
+static u32 CountNon255Bytes(const u8 *Mem) {
+  const u32 *Ptr = (const u32 *)Mem;
   u32 I = (MAP_SIZE >> 2);
   u32 Ret = 0;
 
@@ -138,7 +142,14 @@ static u32 CountNon255Bytes(u8 *Mem) {
   return Ret;
 }
 
-static inline u8 HasNewBits(u8 *TraceBits, u8 *VirginMap) {
+// Check if the current execution path brings anything new to the table.
+// Update virgin bits to reflect the finds. Returns 1 if the only change is
+// the hit-count for a particular tuple; 2 if there are new tuples seen.
+// Updates the map, so subsequent calls will always return 0.
+//
+// This function is called after every exec() on a fairly large buffer, so
+// it needs to be fast. We do this in 32-bit and 64-bit flavors.
+static inline u8 HasNewBits(const u8 *TraceBits, const u8 *VirginMap) {
 #ifdef WORD_SIZE_64
   u64 *Current = (u64 *)TraceBits;
   u64 *Virgin = (u64 *)VirginMap;
@@ -185,6 +196,15 @@ static inline u8 HasNewBits(u8 *TraceBits, u8 *VirginMap) {
   }
 
   return Ret;
+}
+
+static u64 GetCurTime() {
+  struct timeval TV;
+  struct timezone TZ;
+
+  gettimeofday(&TV, &TZ);
+
+  return (TV.tv_sec * 1000ULL) + (TV.tv_usec / 1000);
 }
 
 static void RemoveShm(s32 ShmId) { shmctl(ShmId, IPC_RMID, NULL); }
@@ -292,8 +312,13 @@ static void RunTarget(u8 *TraceBits, const std::vector<const char *> &Argv) {
 static void NewTestcase(const struct inotify_event *Event,
                         const fs::path &Target,
                         const std::vector<std::string> &TargetArgs) {
+  // Check for a valid testcase
+  if (strncmp(Event->name, "id:", 3) != 0)
+    return;
+
   const fs::path Testcase = OutDir / "queue" / ".blackbox" / Event->name;
   u8 *TraceBits = nullptr;
+  u8 HNB = 0;
 
   std::vector<const char *> Argv;
   ToCStringVector(TargetArgs, Argv);
@@ -302,13 +327,27 @@ static void NewTestcase(const struct inotify_event *Event,
   DetectFileArgs(Target, Testcase, Argv);
   RunTarget(TraceBits, Argv);
 
-  if (HasNewBits(TraceBits, VirginBits)) {
-    const u32 TBytes = CountNon255Bytes(VirginBits);
-    double TByteRatio = ((double)TBytes * 100) / MAP_SIZE;
-    ACTF("%s, %.02f", Testcase.c_str(), TByteRatio);
+  // Ensure only one thread updates the coverage bitmap at any one time
+  {
+    std::unique_lock<std::mutex> Lock(VirginBitsLock);
+    HNB = HasNewBits(TraceBits, VirginBits);
   }
 
-  fs::remove(Testcase);
+  if (HNB) {
+    const u32 TBytes = CountNon255Bytes(VirginBits);
+    double TByteRatio = ((double)TBytes * 100) / MAP_SIZE;
+
+    if (Csv) {
+      // Ensure only one thread writes to the CSV file at any one time
+      std::unique_lock<std::mutex> Lock(CsvLock);
+      fprintf(Csv, "%llu,%.02f,%s\n", GetCurTime() / 1000, TByteRatio,
+              Event->name + 3);
+      fflush(Csv);
+    }
+  } else {
+    fs::remove(Testcase);
+  }
+
   RemoveShm(ShmId);
 }
 
@@ -386,9 +425,22 @@ static void ParseFuzzerStats(std::istream &IS,
   }
 
   // The remaining arguments are target arguments
-  for (unsigned I = optind; I < Argc; ++I) {
+  for (unsigned I = optind; I < Argc; ++I)
     TargetArgs.push_back(Argv[I]);
-  }
+}
+
+static void HandleCtrlC(int Sig) {
+  ACTF("Ctrl+C detected. Quitting...");
+  Stop = true;
+}
+
+static void SetupSignalHandlers() {
+  struct sigaction SA;
+
+  sigemptyset(&SA.sa_mask);
+  memset(&SA, 0, sizeof(struct sigaction));
+  SA.sa_handler = HandleCtrlC;
+  sigaction(SIGINT, &SA, nullptr);
 }
 
 static void Usage(const char *Argv0) {
@@ -410,7 +462,6 @@ int main(int Argc, char *Argv[]) {
   int Opt;
   unsigned Jobs = 1;
   struct timeval Timeout;
-  std::ofstream Csv;
   fs::path InstTarget;
 
   while ((Opt = getopt(Argc, Argv, "+j:c:t:a:h")) > 0) {
@@ -419,7 +470,9 @@ int main(int Argc, char *Argv[]) {
       Jobs = std::stoul(optarg);
     } break;
     case 'c': { // CSV path
-      Csv.open(optarg);
+      if ((Csv = fopen(optarg, "w")) == nullptr)
+        PFATAL("fopen failed");
+      fprintf(Csv, "unix_time,map_size,execs\n");
     } break;
     case 't': { // Timeout
       Timeout.tv_sec = std::stoul(optarg);
@@ -445,6 +498,9 @@ int main(int Argc, char *Argv[]) {
   }
 
   OutDir = Argv[optind];
+
+  // Setup signal handlers
+  SetupSignalHandlers();
 
   // Parse fuzzer_stats
   std::ifstream IFS(OutDir / "fuzzer_stats");
@@ -475,8 +531,11 @@ int main(int Argc, char *Argv[]) {
     PFATAL("inotify_add_watch failed");
 
   while (true) {
-    if (select(FD + 1, &WS, nullptr, nullptr, nullptr) < 0)
-      PFATAL("select failed");
+    if (Stop)
+      break;
+
+    //    if (select(FD + 1, &WS, nullptr, nullptr, nullptr) < 0)
+    //      PFATAL("select failed");
 
     int ReadLen = read(FD, EventBuf, EVENT_BUFFER_SIZE);
     if (ReadLen < 0)
@@ -491,8 +550,9 @@ int main(int Argc, char *Argv[]) {
   }
 
   // Cleanup
-  Csv.close();
   close(FD);
+  if (Csv)
+    fclose(Csv);
 
   return 0;
 }
