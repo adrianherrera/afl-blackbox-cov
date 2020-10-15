@@ -204,30 +204,6 @@ static s32 SetupShm(u8 **TraceBits) {
   return ShmId;
 }
 
-// static void HandleSig(int Sig) {
-//  if (ChildPID > 0)
-//    kill(ChildPID, SIGKILL);
-//}
-//
-// static void SetupSignalHandlers() {
-//  struct sigaction SA;
-//  SA.sa_handler = nullptr;
-//  SA.sa_flags = SA_RESTART;
-//  SA.sa_sigaction = nullptr;
-//
-//  sigemptyset(&SA.sa_mask);
-//
-//  // Various ways of saying "stop"
-//  SA.sa_handler = HandleSig;
-//  sigaction(SIGHUP, &SA, nullptr);
-//  sigaction(SIGINT, &SA, nullptr);
-//  sigaction(SIGTERM, &SA, nullptr);
-//
-//  // Exec timeout notifications
-//  SA.sa_handler = HandleSig;
-//  sigaction(SIGALRM, &SA, nullptr);
-//}
-
 // Detect @@ in args
 static void DetectFileArgs(const fs::path &Target, const fs::path &TC,
                            std::vector<const char *> &Argv) {
