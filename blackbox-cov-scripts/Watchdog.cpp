@@ -1,9 +1,20 @@
+/**
+ * Watchdog for blackbox fuzzing "shadow" queue. So that the blackbox AFL is not
+ * disturbed by more-complex logic, this script watches a "shadow queue" that
+ * stores all testcases, replays these testcases through an instrumented version
+ * of the target program, and deletes testcases that do not lead to new
+ * coverage.
+ *
+ * Author: Adrian Herrera
+ */
+
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <map>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -47,6 +58,7 @@ static inline void ToCStringVector(const std::vector<std::string> &V1,
 ////////////////////////////////////////////////////////////////////////////////
 
 static bool Stop;          /**< Stop the watchdog */
+static u32 Timeout;        /**< Stop the watchdog after `Timeout` seconds */
 static fs::path OutDir;    /**< AFL output directory */
 static FILE *Csv;          /**< CSV log file */
 static std::mutex CsvLock; /**< CSV log file lock */
@@ -312,6 +324,9 @@ static void RunTarget(u8 *TraceBits, const std::vector<const char *> &Argv) {
 static void NewTestcase(const struct inotify_event *Event,
                         const fs::path &Target,
                         const std::vector<std::string> &TargetArgs) {
+  // Testcases are still being created. Reset the timeout
+  alarm(Timeout);
+
   // Check for a valid testcase
   if (strncmp(Event->name, "id:", 3) != 0)
     return;
@@ -429,8 +444,8 @@ static void ParseFuzzerStats(std::istream &IS,
     TargetArgs.push_back(Argv[I]);
 }
 
-static void HandleCtrlC(int Sig) {
-  ACTF("Ctrl+C detected. Quitting...");
+static void HandleSig(int Sig) {
+  ACTF("%s detected. Quitting...", strsignal(Sig));
   Stop = true;
 }
 
@@ -439,8 +454,10 @@ static void SetupSignalHandlers() {
 
   sigemptyset(&SA.sa_mask);
   memset(&SA, 0, sizeof(struct sigaction));
-  SA.sa_handler = HandleCtrlC;
+  SA.sa_handler = HandleSig;
+
   sigaction(SIGINT, &SA, nullptr);
+  sigaction(SIGALRM, &SA, nullptr);
 }
 
 static void Usage(const char *Argv0) {
@@ -461,7 +478,6 @@ int main(int Argc, char *Argv[]) {
 
   int Opt;
   unsigned Jobs = 1;
-  struct timeval Timeout;
   fs::path InstTarget;
 
   while ((Opt = getopt(Argc, Argv, "+j:c:t:a:h")) > 0) {
@@ -475,8 +491,7 @@ int main(int Argc, char *Argv[]) {
       fprintf(Csv, "unix_time,map_size,execs\n");
     } break;
     case 't': { // Timeout
-      Timeout.tv_sec = std::stoul(optarg);
-      Timeout.tv_usec = 0;
+      Timeout = std::stoul(optarg);
     } break;
     case 'a': { // Instrumented target
       InstTarget = optarg;
