@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-Watchdog for blackbox fuzzing "shadow" queue. So that the blackbox AFL is not
+Monitor for blackbox fuzzing "shadow" queue. So that the blackbox AFL is not
 disturbed by more-complex logic, this script watches a "shadow queue" that
 stores all testcases, replays these testcases through an instrumented version of
 the target program, and deletes testcases that do not lead to new coverage.
@@ -42,7 +42,7 @@ CSV_FIELDNAMES = ('unix_time', 'map_size', 'execs')
 
 def parse_args() -> Namespace:
     """Parse command-line arguments."""
-    parser = ArgumentParser(description='Blackbox coverage watchdog')
+    parser = ArgumentParser(description='Blackbox coverage monitor')
     parser.add_argument('-j', '--jobs', type=int, default=0,
                         help='Number of worker threads to spawn')
     parser.add_argument('-c', '--csv', default=None,
@@ -164,7 +164,7 @@ def no_new_files(signum, frame):
     """
     SIGALRM handler.
 
-    Kills the watchdog.
+    Kills the monitor.
     """
     print('No new files, goodbye')
     os.kill(0, 9)
@@ -266,7 +266,7 @@ def main() -> None:
         cov_thread.daemon = True
         cov_thread.start()
 
-        # Start the watchdog
+        # Start the monitor
         handler = TestCaseHandler(executor, cov_queue, target, afl_stats,
                                   args.timeout)
         observer = Observer()

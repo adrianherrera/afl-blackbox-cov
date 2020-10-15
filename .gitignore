@@ -1,4 +1,5 @@
 afl-blackbox-cov
+afl-blackbox-monitor
 
 # Binaries produced by "make".
 afl-analyze

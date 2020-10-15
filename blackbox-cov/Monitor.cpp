@@ -1,5 +1,5 @@
 /**
- * Watchdog for blackbox fuzzing "shadow" queue. So that the blackbox AFL is not
+ * Monitor for blackbox fuzzing "shadow" queue. So that the blackbox AFL is not
  * disturbed by more-complex logic, this script watches a "shadow queue" that
  * stores all testcases, replays these testcases through an instrumented version
  * of the target program, and deletes testcases that do not lead to new
@@ -57,8 +57,8 @@ static inline void ToCStringVector(const std::vector<std::string> &V1,
 //
 ////////////////////////////////////////////////////////////////////////////////
 
-static bool Stop;          /**< Stop the watchdog */
-static u32 Timeout;        /**< Stop the watchdog after `Timeout` seconds */
+static bool Stop;          /**< Stop the monitor */
+static u32 Timeout;        /**< Stop the monitor after `Timeout` seconds */
 static fs::path OutDir;    /**< AFL output directory */
 static FILE *Csv;          /**< CSV log file */
 static std::mutex CsvLock; /**< CSV log file lock */

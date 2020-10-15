@@ -10,11 +10,11 @@ CXXFLAGS    += -Wall -Werror -D_FORTIFY_SOURCE=2 -Wno-pointer-sign \
 
 LDFLAGS     ?= -lpthread
 
-PROGS = ../afl-blackbox-watchdog
+PROGS = ../afl-blackbox-monitor
 
 all: $(PROGS)
 
-../afl-blackbox-watchdog: Watchdog.cpp ThreadPool.h
+../afl-blackbox-monitor: Monitor.cpp ThreadPool.h
 	$(CXX) $(CXXFLAGS) $< -o $@ $(LDFLAGS)
 
 .NOTPARALLEL: clean
