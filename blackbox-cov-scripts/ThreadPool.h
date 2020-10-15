@@ -9,7 +9,9 @@
 #include <thread>
 #include <vector>
 
-#include "debug.h"
+extern "C" {
+#include "../debug.h"
+}
 
 // Adapted from https://github.com/progschj/ThreadPool/blob/master/ThreadPool.h
 class ThreadPool {

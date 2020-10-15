@@ -34,9 +34,9 @@
 #include "ThreadPool.h"
 
 extern "C" {
-#include "config.h"
-#include "debug.h"
-#include "types.h"
+#include "../config.h"
+#include "../debug.h"
+#include "../types.h"
 }
 
 namespace fs = std::filesystem;
