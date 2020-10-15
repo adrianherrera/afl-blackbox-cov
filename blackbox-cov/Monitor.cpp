@@ -513,12 +513,17 @@ int main(int Argc, char *Argv[]) {
   }
 
   OutDir = Argv[optind];
+  fs::path FuzzerStats = OutDir / "fuzzer_stats";
 
   // Setup signal handlers
   SetupSignalHandlers();
 
+  // Wait for fuzzer_stats to exist
+  while (!fs::exists(FuzzerStats))
+    sleep(1);
+
   // Parse fuzzer_stats
-  std::ifstream IFS(OutDir / "fuzzer_stats");
+  std::ifstream IFS(FuzzerStats);
   std::vector<std::string> TargetArgs;
   ParseFuzzerStats(IFS, TargetArgs);
   IFS.close();
@@ -536,9 +541,9 @@ int main(int Argc, char *Argv[]) {
   if (FD < 0)
     PFATAL("inotify_init1 failed");
 
-  fd_set WS;
-  FD_ZERO(&WS);
-  FD_SET(FD, &WS);
+  //  fd_set WS;
+  //  FD_ZERO(&WS);
+  //  FD_SET(FD, &WS);
 
   int WD = inotify_add_watch(FD, (OutDir / "queue" / ".blackbox").c_str(),
                              IN_CLOSE_WRITE);
@@ -552,7 +557,7 @@ int main(int Argc, char *Argv[]) {
     //    if (select(FD + 1, &WS, nullptr, nullptr, nullptr) < 0)
     //      PFATAL("select failed");
 
-    int ReadLen = read(FD, EventBuf, EVENT_BUFFER_SIZE);
+    ssize_t ReadLen = read(FD, EventBuf, EVENT_BUFFER_SIZE);
     if (ReadLen < 0)
       PFATAL("read failed");
 
