@@ -331,6 +331,8 @@ static void NewTestcase(const struct inotify_event *Event,
   if (strncmp(Event->name, "id:", 3) != 0)
     return;
 
+  ACTF("New testcase '%s'.", Event->name);
+
   const fs::path Testcase = OutDir / "queue" / ".blackbox" / Event->name;
   u8 *TraceBits = nullptr;
   u8 HNB = 0;
@@ -351,6 +353,9 @@ static void NewTestcase(const struct inotify_event *Event,
   if (HNB) {
     const u32 TBytes = CountNon255Bytes(VirginBits);
     double TByteRatio = ((double)TBytes * 100) / MAP_SIZE;
+
+    ACTF("'%s' led to new coverage. Bitmap coverage now %.02f%%.", Event->name,
+         TByteRatio);
 
     if (Csv) {
       // Ensure only one thread writes to the CSV file at any one time
@@ -536,24 +541,26 @@ int main(int Argc, char *Argv[]) {
   if (FD < 0)
     PFATAL("inotify_init1 failed");
 
-  //  fd_set WS;
-  //  FD_ZERO(&WS);
-  //  FD_SET(FD, &WS);
+  fd_set WS;
+  FD_ZERO(&WS);
+  FD_SET(FD, &WS);
 
   int WD = inotify_add_watch(FD, (OutDir / "queue" / ".blackbox").c_str(),
                              IN_CLOSE_WRITE);
   if (WD < 0)
     PFATAL("inotify_add_watch failed");
 
+  OKF("Configured inotify watch.");
+
   while (true) {
     if (Stop)
       break;
 
-    //    if (select(FD + 1, &WS, nullptr, nullptr, nullptr) < 0)
-    //      PFATAL("select failed");
+    if (select(FD + 1, &WS, nullptr, nullptr, nullptr) < 0 && !Stop)
+      PFATAL("select failed");
 
     ssize_t ReadLen = read(FD, EventBuf, EVENT_BUFFER_SIZE);
-    if (ReadLen < 0)
+    if (ReadLen < 0 && !Stop)
       PFATAL("read failed");
 
     for (char *Ptr = EventBuf; Ptr < EventBuf + ReadLen;) {
