@@ -241,10 +241,8 @@ def main() -> None:
     # Wait for fuzzer_stats to exist
     out_dir = args.out_dir
     fuzzer_stats_path = out_dir / 'fuzzer_stats'
-    while not fuzzer_stats_path.exists():
-        sleep(1)
-    with open(fuzzer_stats_path, 'r') as inf:
-        afl_stats = FuzzerStats(inf)
+    if not fuzzer_stats_path.exists():
+        raise Exception('No fuzzer_stats in `%s`' % out_dir)
 
     # Open CSV plot_data
     csv_path = args.csv
