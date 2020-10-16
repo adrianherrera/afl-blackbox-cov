@@ -55,6 +55,7 @@ static inline void ToCStringVector(const std::vector<std::string> &V1,
                                    std::vector<const char *> &V2) {
   std::transform(V1.begin(), V1.end(), std::back_inserter(V2),
                  [](const std::string &S) { return S.c_str(); });
+  V2.push_back(nullptr);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
