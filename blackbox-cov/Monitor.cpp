@@ -45,6 +45,12 @@ static constexpr size_t EVENT_SIZE = sizeof(struct inotify_event);
 static constexpr size_t EVENT_BUFFER_SIZE = 1024 * (EVENT_SIZE + NAME_MAX + 1);
 static constexpr char const *AFL_OPTSTRING = "+i:o:f:m:b:t:T:dnCB:S:M:x:QV";
 
+static bool Stop;          /**< Stop the monitor */
+static u32 Timeout;        /**< Stop the monitor after `Timeout` seconds */
+static fs::path OutDir;    /**< AFL output directory */
+static FILE *Csv;          /**< CSV log file */
+static std::mutex CsvLock; /**< CSV log file lock */
+
 static inline void ToCStringVector(const std::vector<std::string> &V1,
                                    std::vector<const char *> &V2) {
   std::transform(V1.begin(), V1.end(), std::back_inserter(V2),
@@ -57,12 +63,7 @@ static inline void ToCStringVector(const std::vector<std::string> &V1,
 //
 ////////////////////////////////////////////////////////////////////////////////
 
-static bool Stop;          /**< Stop the monitor */
-static u32 Timeout;        /**< Stop the monitor after `Timeout` seconds */
-static fs::path OutDir;    /**< AFL output directory */
-static FILE *Csv;          /**< CSV log file */
-static std::mutex CsvLock; /**< CSV log file lock */
-
+static s32 DevNullFD;            /**< /dev/null file descriptor */
 static u64 MemLimit = MEM_LIMIT; /**< Memory limit (MB) */
 static u32 ExecTimeout;          /**< Exec timeout (ms) */
 
@@ -262,13 +263,6 @@ static void RunTarget(u8 *TraceBits, const std::vector<const char *> &Argv) {
   if (!ChildPID) {
     struct rlimit R;
 
-    s32 DevNullFD = open("/dev/null", O_RDWR);
-    if (DevNullFD < 0 || dup2(DevNullFD, 1) < 0 || dup2(DevNullFD, 2) < 0) {
-      *(u32 *)TraceBits = EXEC_FAIL_SIG;
-      PFATAL("Desecriptor initialization failed");
-    }
-    close(DevNullFD);
-
     if (MemLimit) {
       R.rlim_max = R.rlim_cur = ((rlim_t)MemLimit) << 20;
 #ifdef RLIMIT_AS
@@ -282,8 +276,21 @@ static void RunTarget(u8 *TraceBits, const std::vector<const char *> &Argv) {
 
     setrlimit(RLIMIT_CORE, &R); // Ignore errors
 
+    // Isolate the process and configure standard descriptors. If out_file is
+    // specified, stdin is /dev/null; otherwise, out_fd is cloned instead.
+
     setsid();
+
+    dup2(DevNullFD, 1);
+    dup2(DevNullFD, 2);
+
+    // On Linux, would be faster to use O_CLOEXEC. Maybe TODO.
+    close(DevNullFD);
+
     execv(Argv[0], const_cast<char *const *>(&Argv[0]));
+
+    // Use a distinctive bitmap value to tell the parent about execv() falling
+    // through.
 
     *(u32 *)TraceBits = EXEC_FAIL_SIG;
     exit(0);
@@ -531,6 +538,11 @@ int main(int Argc, char *Argv[]) {
   // Initialize AFL coverage data structures
   InitCountClass16();
   memset(VirginBits, 255, MAP_SIZE);
+
+  // Initialize /dev/null file descriptor
+  DevNullFD = open("/dev/null", O_RDWR);
+  if (DevNullFD < 0)
+    PFATAL("open failed");
 
   // Initialize thread pool for handling testcase creation
   ThreadPool Pool(Jobs);
