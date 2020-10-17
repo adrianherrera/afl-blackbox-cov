@@ -8114,6 +8114,7 @@ int main(int argc, char** argv) {
   /* Create the stats file before the dry run so that the watchdog can capture
      the dry run coverage. */
   write_stats_file(0, 0, 0);
+  sleep(2);
 #endif
   perform_dry_run(use_argv);
 
