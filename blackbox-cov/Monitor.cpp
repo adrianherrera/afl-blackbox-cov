@@ -46,7 +46,6 @@ static constexpr size_t EVENT_BUFFER_SIZE = 1024 * (EVENT_SIZE + NAME_MAX + 1);
 static constexpr char const *AFL_OPTSTRING = "+i:o:f:m:b:t:T:dnCB:S:M:x:QV";
 
 static bool Stop;          /**< Stop the monitor */
-static u32 Timeout;        /**< Stop the monitor after `Timeout` seconds */
 static fs::path OutDir;    /**< AFL output directory */
 static FILE *Csv;          /**< CSV log file */
 static std::mutex CsvLock; /**< CSV log file lock */
@@ -245,7 +244,7 @@ static void DetectFileArgs(const fs::path &Target, const fs::path &TC,
   Argv[0] = Target.c_str();
 
   // Find and replace @@
-  for (unsigned I = 1; I < Argv.size(); ++I)
+  for (unsigned I = 1; Argv[I] != nullptr && I < Argv.size(); ++I)
     if (strstr(Argv[I], "@@"))
       Argv[I] = TC.c_str();
 }
@@ -332,14 +331,9 @@ static void RunTarget(u8 *TraceBits, const std::vector<const char *> &Argv) {
 static void NewTestcase(const struct inotify_event *Event,
                         const fs::path &Target,
                         const std::vector<std::string> &TargetArgs) {
-  // Testcases are still being created. Reset the timeout
-  alarm(Timeout);
-
   // Check for a valid testcase
   if (strncmp(Event->name, "id:", 3) != 0)
     return;
-
-  ACTF("New testcase '%s'.", Event->name);
 
   const fs::path Testcase = OutDir / "queue" / ".blackbox" / Event->name;
   u8 *TraceBits = nullptr;
@@ -368,8 +362,8 @@ static void NewTestcase(const struct inotify_event *Event,
     if (Csv) {
       // Ensure only one thread writes to the CSV file at any one time
       std::unique_lock<std::mutex> Lock(CsvLock);
-      fprintf(Csv, "%llu,%.02f,%s\n", GetCurTime() / 1000, TByteRatio,
-              Event->name + 3);
+      fprintf(Csv, "%llu,%.02f,%llu\n", GetCurTime() / 1000, TByteRatio,
+              std::stoull(Event->name + 3));
       fflush(Csv);
     }
   } else {
@@ -466,11 +460,10 @@ static void SetupSignalHandlers() {
   struct sigaction SA;
 
   sigemptyset(&SA.sa_mask);
-  memset(&SA, 0, sizeof(struct sigaction));
   SA.sa_handler = HandleSig;
+  SA.sa_flags = 0;
 
   sigaction(SIGINT, &SA, nullptr);
-  sigaction(SIGALRM, &SA, nullptr);
 }
 
 static void Usage(const char *Argv0) {
@@ -492,6 +485,9 @@ int main(int Argc, char *Argv[]) {
   int Opt;
   unsigned Jobs = 1;
   fs::path InstTarget;
+  struct timeval Timeout;
+  struct timeval *TimeoutPtr = nullptr;
+  u32 TimeoutSec = 0;
 
   while ((Opt = getopt(Argc, Argv, "+j:c:t:a:h")) > 0) {
     switch (Opt) {
@@ -504,7 +500,8 @@ int main(int Argc, char *Argv[]) {
       fprintf(Csv, "unix_time,map_size,execs\n");
     } break;
     case 't': { // Timeout
-      Timeout = std::stoul(optarg);
+      TimeoutSec = std::stoul(optarg);
+      TimeoutPtr = &Timeout;
     } break;
     case 'a': { // Instrumented target
       InstTarget = optarg;
@@ -569,8 +566,17 @@ int main(int Argc, char *Argv[]) {
     if (Stop)
       break;
 
-    if (select(FD + 1, &WS, nullptr, nullptr, nullptr) < 0 && !Stop)
+    // Configure select with a timeout (if one was given). Select may modify
+    // the timeval structure, so we must continuously reset it
+    if (TimeoutPtr)
+      Timeout = {.tv_sec = TimeoutSec, .tv_usec = 0};
+    int Ret = select(FD + 1, &WS, nullptr, nullptr, TimeoutPtr);
+    if (Ret < 0 && !Stop) {
       PFATAL("select failed");
+    } else if (Ret == 0) {
+      ACTF("Timeout. Quitting...");
+      break;
+    }
 
     ssize_t ReadLen = read(FD, EventBuf, EVENT_BUFFER_SIZE);
     if (ReadLen < 0 && !Stop)
