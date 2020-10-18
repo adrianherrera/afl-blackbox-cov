@@ -220,7 +220,11 @@ static u64 GetCurTime() {
   return (TV.tv_sec * 1000ULL) + (TV.tv_usec / 1000);
 }
 
-static void RemoveShm(s32 ShmId) { shmctl(ShmId, IPC_RMID, NULL); }
+static void RemoveShm(s32 ShmId, const u8 *TraceBits) {
+  if (shmdt(TraceBits) < 0)
+    PFATAL("shmdt failed");
+  shmctl(ShmId, IPC_RMID, NULL);
+}
 
 static s32 SetupShm(u8 **TraceBits) {
   const s32 ShmId = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
@@ -352,7 +356,10 @@ static void NewTestcase(const struct inotify_event *Event,
     HNB = HasNewBits(TraceBits, VirginBits);
   }
 
-  if (HNB) {
+  RemoveShm(ShmId, TraceBits);
+
+  if (HNB == 2) {
+    // Only record coverage if new tuples are seen
     const u32 TBytes = CountNon255Bytes(VirginBits);
     double TByteRatio = ((double)TBytes * 100) / MAP_SIZE;
 
@@ -366,11 +373,10 @@ static void NewTestcase(const struct inotify_event *Event,
               std::stoull(Event->name + 3));
       fflush(Csv);
     }
-  } else {
+  } else if (HNB == 0) {
+    // Remove the testcase if it didn't contribute to new tuples or hit counts
     fs::remove(Testcase);
   }
-
-  RemoveShm(ShmId);
 }
 
 static void ParseFuzzerStats(std::istream &IS,
